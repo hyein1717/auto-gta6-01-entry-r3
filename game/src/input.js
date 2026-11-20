@@ -1,53 +1,82 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+// input.js — keyboard state plus a drag-orbit mouse camera. Everything the
+// player and vehicles need is exposed as plain fields so the game loop can
+// poll once per frame; one-shot actions (enter car, pause, horn) are queued
+// as "pressed" events that the loop consumes exactly once.
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
+export class Input {
+  constructor(canvas) {
+    this.keys = new Set();
+    this.pressedQueue = new Set();
+    this.camYaw = Math.PI; // start looking north across the bay strip
+    this.camPitch = 0.32;
+    this.camDist = 9;
+    this.dragging = false;
+    this.lastX = 0;
+    this.lastY = 0;
+    this.enabled = false; // the start screen flips this on
 
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+    window.addEventListener('keydown', (ev) => {
+      if (ev.repeat) return;
+      const code = ev.code;
+      this.keys.add(code);
+      this.pressedQueue.add(code);
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(code)) ev.preventDefault();
+    });
+    window.addEventListener('keyup', (ev) => this.keys.delete(ev.code));
+    window.addEventListener('blur', () => this.keys.clear());
 
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
+    canvas.addEventListener('pointerdown', (ev) => {
+      this.dragging = true;
+      this.lastX = ev.clientX;
+      this.lastY = ev.clientY;
+      canvas.setPointerCapture(ev.pointerId);
+    });
+    canvas.addEventListener('pointermove', (ev) => {
+      if (!this.dragging) return;
+      const dx = ev.clientX - this.lastX;
+      const dy = ev.clientY - this.lastY;
+      this.lastX = ev.clientX;
+      this.lastY = ev.clientY;
+      this.camYaw -= dx * 0.0052;
+      this.camPitch = clamp(this.camPitch + dy * 0.004, 0.06, 1.15);
+    });
+    const stopDrag = () => { this.dragging = false; };
+    canvas.addEventListener('pointerup', stopDrag);
+    canvas.addEventListener('pointercancel', stopDrag);
+    canvas.addEventListener('wheel', (ev) => {
+      this.camDist = clamp(this.camDist + Math.sign(ev.deltaY) * 1.4, 5, 20);
+    }, { passive: true });
+  }
 
-  window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
+  down(code) {
+    return this.keys.has(code);
+  }
 
-  return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
-    },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
-    },
-  };
+  // True once per physical press; consumes the queued press.
+  pressed(code) {
+    if (this.pressedQueue.has(code)) {
+      this.pressedQueue.delete(code);
+      return true;
+    }
+    return false;
+  }
+
+  // Forward/strafe axes in [-1, 1] from WASD + arrows.
+  moveAxes() {
+    let f = 0;
+    let s = 0;
+    if (this.down('KeyW') || this.down('ArrowUp')) f += 1;
+    if (this.down('KeyS') || this.down('ArrowDown')) f -= 1;
+    if (this.down('KeyA') || this.down('ArrowLeft')) s -= 1;
+    if (this.down('KeyD') || this.down('ArrowRight')) s += 1;
+    return { forward: f, strafe: s };
+  }
+
+  clearPresses() {
+    this.pressedQueue.clear();
+  }
+}
+
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
 }
